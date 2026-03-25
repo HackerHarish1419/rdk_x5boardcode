@@ -3,8 +3,7 @@ import glob
 import time
 import numpy as np
 import cv2
-import threading
-import queue
+import multiprocessing
 import requests
 from bpu_infer_lib_x5 import Infer
 from simple_tracker import SimpleIOUTracker
@@ -32,7 +31,9 @@ NMS_THRESHOLD = 0.45
 # ==================== Global/Queue Setup ====================
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-upload_queue = queue.Queue()
+
+# multiprocessing.Queue works across process boundaries
+upload_queue = multiprocessing.Queue()
 
 # Track Best Frames: {track_id: {'proof': None, 'crops': [(score, crop_img)]}}
 # 'crops' will hold up to 3 tuples, sorted by score.
@@ -73,14 +74,21 @@ def check_and_clear_storage(directory, max_mb=1000):
                 
         print(f"[Storage] Cleaned up {freed/(1024*1024.0):.1f}MB.")
 
-# ==================== Upload Worker ====================
+# ==================== Upload Worker (Separate Process) ====================
 
-def upload_worker():
-    print("[Uploader] Background thread started.")
+def upload_worker(q, api_url, api_key, camera_id, location):
+    """
+    Runs in a completely separate OS process.
+    Reads file paths from the multiprocessing queue,
+    POSTs them to Cloudflare, and deletes on success.
+    """
+    import requests as req  # Import inside process for safety
+    print("[Uploader] Separate upload process started (PID: %d)." % os.getpid())
     while True:
         try:
-            item = upload_queue.get()
-            if item is None: # Poison pill to exit
+            item = q.get()
+            if item is None:  # Poison pill to exit
+                print("[Uploader] Received shutdown signal. Exiting.")
                 break
                 
             track_id = item['track_id']
@@ -94,15 +102,15 @@ def upload_worker():
 
             print(f"[Uploader] Processing Track ID {track_id} ({len(files_to_upload)} files)...")
 
-            headers = {"x-api-key": API_KEY}
+            headers = {"x-api-key": api_key}
             
             for file_path in files_to_upload:
                 try:
                     with open(file_path, 'rb') as f:
                         files = {"files": f}
-                        data = {"camera_id": CAMERA_ID, "location": LOCATION}
+                        data = {"camera_id": camera_id, "location": location}
                         
-                        response = requests.post(API_URL, headers=headers, files=files, data=data, timeout=15)
+                        response = req.post(api_url, headers=headers, files=files, data=data, timeout=15)
                         
                         if response.status_code == 200:
                             json_data = response.json()
@@ -119,12 +127,8 @@ def upload_worker():
                 except Exception as e:
                     print(f"[Uploader] Request failed for {file_path}: {e}")
             
-            upload_queue.task_done()
         except Exception as e:
             print(f"[Uploader] Main loop error: {e}")
-
-worker_thread = threading.Thread(target=upload_worker, daemon=True)
-worker_thread.start()
 
 # ==================== Image Processing Utilities ====================
 
@@ -412,9 +416,12 @@ def run_pipeline(model, input_path):
                 })
 
         # Wait for uploads to finish
-        print("Waiting for final uploads to complete...")
+        print("Waiting for upload process to finish...")
         upload_queue.put(None)
-        worker_thread.join()
+        worker_process.join(timeout=60)
+        if worker_process.is_alive():
+            print("[Warning] Upload process did not exit cleanly. Terminating.")
+            worker_process.terminate()
         print("Done.")
 
 # ==================== Main Entry ====================
@@ -423,8 +430,18 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser("ALPR Pipeline")
     parser.add_argument("--model", type=str, default="helmet_best2.bin")
-    parser.add_argument("--input", type=str, required=True, help="Video file or stream")
+    parser.add_argument("--input", type=str, required=True, help="Video file, image dir, or stream")
     args = parser.parse_args()
+
+    # Start the upload worker as a SEPARATE OS PROCESS
+    worker_process = multiprocessing.Process(
+        target=upload_worker,
+        args=(upload_queue, API_URL, API_KEY, CAMERA_ID, LOCATION),
+        daemon=True
+    )
+    worker_process.start()
+    print(f"[Main] Detection process PID: {os.getpid()}")
+    print(f"[Main] Upload process PID:    {worker_process.pid}")
 
     print(f"Loading Model: {args.model}")
     model = Infer(args.model)

@@ -153,12 +153,6 @@ def upload_worker(q, api_url, api_key, camera_id, location):
 
 # ==================== Image Processing Utilities ====================
 
-def get_laplacian_variance(image):
-    """Calculates image sharpness. Higher is sharper."""
-    h, w = image.shape[:2]
-    if h == 0 or w == 0: return 0.0
-    return cv2.Laplacian(image, cv2.CV_64F).var()
-
 def bgr2nv12(bgr_img: np.ndarray) -> np.ndarray:
     h, w = bgr_img.shape[:2]
     area = h * w
@@ -373,7 +367,10 @@ def run_pipeline(model, input_path):
                     rider_crop = clean_frame[py1:py2, px1:px2]
                     if rider_crop.size == 0: continue
                     
-                    score = get_laplacian_variance(rider_crop)
+                    # Score by Area: A larger box means the vehicle is closer to the camera.
+                    # This physically guarantees more pixels on the number plate, 
+                    # avoiding the motion-blur traps of Laplacian variance.
+                    score = (px2 - px1) * (py2 - py1)
                     
                     if track_id not in violator_tracking:
                         violator_tracking[track_id] = {'proof_img': None, 'crops': []}

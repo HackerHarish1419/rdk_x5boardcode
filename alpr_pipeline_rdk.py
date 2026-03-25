@@ -346,6 +346,7 @@ def run_pipeline(model, input_path):
                     continue  # Already exhausted/uploaded
 
                 has_violation = False
+                violating_nh_box = None
                 for nh_box in no_helmets:
                     # Stricter intersection: no-helmet center should be in top 50% of Rider/Motorcycle
                     nh_cx = (nh_box[0] + nh_box[2]) / 2.0
@@ -355,6 +356,7 @@ def run_pipeline(model, input_path):
                     
                     if (x1 < nh_cx < x2) and (nh_cy < v_cy):
                         has_violation = True
+                        violating_nh_box = nh_box
                         break
 
                 if has_violation:
@@ -377,9 +379,13 @@ def run_pipeline(model, input_path):
                         
                     best_crops = violator_tracking[track_id]['crops']
                     
-                    # Store 1 proof frame immediately on first violation
+                    # Store 1 proof frame immediately on first violation, with the deduction box drawn
                     if violator_tracking[track_id]['proof_img'] is None:
-                        violator_tracking[track_id]['proof_img'] = clean_frame.copy()
+                        proof = clean_frame.copy()
+                        if violating_nh_box is not None:
+                            bx1, by1, bx2, by2 = violating_nh_box
+                            cv2.rectangle(proof, (int(bx1), int(by1)), (int(bx2), int(by2)), (0, 0, 255), 3)
+                        violator_tracking[track_id]['proof_img'] = proof
 
                     # Array of 3 crops: [ (score, crop), (score, crop), (score, crop) ]
                     # Insert if list < 3 or if score is strictly better than the worst in list

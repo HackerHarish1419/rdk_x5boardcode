@@ -278,15 +278,37 @@ def get_frame_generator(input_path):
             if img is not None:
                 yield img
     else:
+        # Check if it's a live network stream
+        is_live = str(input_path).startswith(('rtsp://', 'http://', 'https://'))
+        
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
-            print(f"Failed to open video: {input_path}")
+            print(f"Failed to open video/stream: {input_path}")
             return
-        print(f"Video detected. Processing {input_path}")
+            
+        if is_live:
+            # Force 1-frame buffer for live streams to avoid latency queueing
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            print(f"Live Stream detected. Processing {input_path} with 1-frame buffer.")
+        else:
+            print(f"Video file detected. Processing {input_path}")
+            
         while cap.isOpened():
+            # For live streams, we might want to grab/retrieve to flush the buffer
+            # but setting BUFFERSIZE to 1 usually suffices for OpenCV modern versions.
             ret, frame = cap.read()
-            if not ret: break
+            if not ret: 
+                if is_live:
+                    print("Stream connection lost. Reconnecting in 5s...")
+                    time.sleep(5)
+                    cap.release()
+                    cap = cv2.VideoCapture(input_path)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    continue
+                else:
+                    break
             yield frame
+            
         cap.release()
 
 def run_pipeline(model, input_path):

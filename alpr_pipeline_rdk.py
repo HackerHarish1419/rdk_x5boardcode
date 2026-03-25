@@ -79,8 +79,8 @@ def check_and_clear_storage(directory, max_mb=1000):
 def upload_worker(q, api_url, api_key, camera_id, location):
     """
     Runs in a completely separate OS process.
-    Reads file paths from the multiprocessing queue,
-    POSTs them to Cloudflare, and deletes on success.
+    Sends all images for a track as a single bundled multipart POST request.
+    Bundle naming: track_{id}_bundle containing track_{id}_proof, track_{id}_crop0, etc.
     """
     import requests as req  # Import inside process for safety
     print("[Uploader] Separate upload process started (PID: %d)." % os.getpid())
@@ -94,39 +94,60 @@ def upload_worker(q, api_url, api_key, camera_id, location):
             track_id = item['track_id']
             proof_path = item['proof']
             crop_paths = item['crops']
-            
-            # Form list of files to upload (3 crops + 1 proof)
-            files_to_upload = [p for p in crop_paths if os.path.exists(p)]
-            if proof_path and os.path.exists(proof_path):
-                files_to_upload.append(proof_path)
+            bundle_id = f"track_{track_id}_bundle"
 
-            print(f"[Uploader] Processing Track ID {track_id} ({len(files_to_upload)} files)...")
+            # Build multipart file list: [ ("files", (filename, file_obj, mime)) , ... ]
+            file_handles = []
+            multipart_files = []
+
+            # Add proof image
+            if proof_path and os.path.exists(proof_path):
+                fh = open(proof_path, 'rb')
+                file_handles.append(fh)
+                multipart_files.append(("files", (f"track_{track_id}_proof.jpg", fh, "image/jpeg")))
+
+            # Add crop images
+            for c_idx, c_path in enumerate(crop_paths):
+                if os.path.exists(c_path):
+                    fh = open(c_path, 'rb')
+                    file_handles.append(fh)
+                    multipart_files.append(("files", (f"track_{track_id}_crop{c_idx}.jpg", fh, "image/jpeg")))
+
+            if not multipart_files:
+                print(f"[Uploader] No files found for {bundle_id}. Skipping.")
+                continue
+
+            print(f"[Uploader] Sending {bundle_id} ({len(multipart_files)} files)...")
 
             headers = {"x-api-key": api_key}
-            
-            for file_path in files_to_upload:
-                try:
-                    with open(file_path, 'rb') as f:
-                        files = {"files": f}
-                        data = {"camera_id": camera_id, "location": location}
-                        
-                        response = req.post(api_url, headers=headers, files=files, data=data, timeout=15)
-                        
-                        if response.status_code == 200:
-                            json_data = response.json()
-                            if json_data.get("message") == "Success":
-                                print(f"[Uploader] ID {track_id} -> Success! Plate: {json_data.get('best_plate', {}).get('plate')}")
-                            else:
-                                print(f"[Uploader] ID {track_id} -> API returned: {json_data}")
-                            
-                            # Delete evidence since it successfully uploaded!
-                            os.remove(file_path)
-                        else:
-                            print(f"[Uploader] HTTP Error {response.status_code}: {response.text}")
-                            
-                except Exception as e:
-                    print(f"[Uploader] Request failed for {file_path}: {e}")
-            
+            data = {
+                "camera_id": camera_id,
+                "location": location,
+                "bundle_id": bundle_id,
+            }
+
+            try:
+                response = req.post(api_url, headers=headers, files=multipart_files, data=data, timeout=30)
+
+                if response.status_code == 200:
+                    json_data = response.json()
+                    plate = json_data.get('best_plate', {}).get('plate', 'N/A')
+                    print(f"[Uploader] {bundle_id} received -> Plate: {plate}")
+
+                    # Delete all uploaded files from disk
+                    for path in [proof_path] + crop_paths:
+                        if path and os.path.exists(path):
+                            os.remove(path)
+                else:
+                    print(f"[Uploader] {bundle_id} HTTP Error {response.status_code}: {response.text}")
+
+            except Exception as e:
+                print(f"[Uploader] {bundle_id} request failed: {e}")
+            finally:
+                # Always close file handles
+                for fh in file_handles:
+                    fh.close()
+
         except Exception as e:
             print(f"[Uploader] Main loop error: {e}")
 

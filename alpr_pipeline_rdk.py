@@ -159,16 +159,6 @@ def get_laplacian_variance(image):
     if h == 0 or w == 0: return 0.0
     return cv2.Laplacian(image, cv2.CV_64F).var()
 
-def enhance_crop(image):
-    """Upscale crop 2x with Lanczos + mild sharpening to reduce pixelation."""
-    h, w = image.shape[:2]
-    upscaled = cv2.resize(image, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4)
-    kernel = np.array([[-1, -1, -1],
-                       [-1,  9, -1],
-                       [-1, -1, -1]])
-    sharpened = cv2.filter2D(upscaled, -1, kernel)
-    return sharpened
-
 def bgr2nv12(bgr_img: np.ndarray) -> np.ndarray:
     h, w = bgr_img.shape[:2]
     area = h * w
@@ -419,7 +409,8 @@ def run_pipeline(model, input_path):
                     crop_paths = []
                     for c_idx, (c_score, c_img) in enumerate(violator_tracking[tid]['crops']):
                         c_path = os.path.join(OUTPUT_DIR, f"track_{tid}_crop{c_idx}.jpg")
-                        cv2.imwrite(c_path, enhance_crop(c_img))
+                        # Write raw un-enhanced crop at 100% JPEG Quality
+                        cv2.imwrite(c_path, c_img, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
                         crop_paths.append(c_path)
                     
                     print(f"Submitting ID {tid} to uploader (Crops: {len(crop_paths)})...")
@@ -449,7 +440,8 @@ def run_pipeline(model, input_path):
                 crop_paths = []
                 for c_idx, (c_score, c_img) in enumerate(data['crops']):
                     c_path = os.path.join(OUTPUT_DIR, f"track_{tid}_crop{c_idx}.jpg")
-                    cv2.imwrite(c_path, enhance_crop(c_img))
+                    # Write raw un-enhanced crop at 100% JPEG Quality
+                    cv2.imwrite(c_path, c_img, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
                     crop_paths.append(c_path)
                     
                 upload_queue.put({

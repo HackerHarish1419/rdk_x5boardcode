@@ -385,6 +385,9 @@ def run_pipeline(model, input_path):
                         if violating_nh_box is not None:
                             bx1, by1, bx2, by2 = violating_nh_box
                             cv2.rectangle(proof, (int(bx1), int(by1)), (int(bx2), int(by2)), (0, 0, 255), 3)
+                            # Draw the label directly above the box
+                            cv2.putText(proof, "No_Helmet", (int(bx1), max(int(by1) - 5, 20)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
                         violator_tracking[track_id]['proof_img'] = proof
 
                     # Array of 3 crops: [ (score, crop), (score, crop), (score, crop) ]
